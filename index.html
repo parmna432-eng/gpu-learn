@@ -1107,7 +1107,7 @@ function stepInfo(s,i,p){
     if(f===-1)return ['درس إضافي','خلّصت المنهج، هذا تمرين'];
     const n=findNode(REQ[Math.min(REQ.length-1,f+(s.done?0:k))]);return ['درس جديد',nodeTitle(n)]}
   const tk=TALKS.find(t=>nodeState({k:'talk',ref:t})==='open');
-  return [tk?tk.title:`سولف ويا ${CH[dayChatter()].name}`,SAMPLE?'محادثة مفتوحة، انت تنهيها':'تشتغل داخل Claude؛ بدالها تمرين استماع'];
+  return [tk?tk.title:`سولف ويا ${CH[dayChatter()].name}`,SAMPLE?'محادثة مفتوحة، انت تنهيها':'مو متوفرة هسه؛ بدالها تمرين استماع'];
 }
 function sessionHTML(){
   const p=plan(),m=todayMins(),g=S.goal,pct=Math.min(100,Math.round(m/g*100)),next=p.steps.findIndex(x=>!x.done);
@@ -1215,7 +1215,7 @@ function viewPractice(){
   const learned=learnedWords(),due=dueWords().length;
   let h=`<h1 class="h">التمرين</h1><p class="sub">التمرين ما ياكل قلوب، ويرجّعلك قلب كل مرة تخلّصه.</p>
   <h2 class="h2" style="margin-top:8px">سولف بحرّية</h2>
-  <p class="sub" style="margin-top:-6px">${SAMPLE?'اختار شخصية وسولف وياها بأي موضوع. المحادثة ما تخلص إلا انت تنهيها، وتصحّحلك أخطاءك.':aiChecked?'المحادثة الحرّة تشتغل لما تفتح الموقع داخل Claude.':'دا أتحضّر للمحادثة...'}</p>
+  <p class="sub" style="margin-top:-6px">${SAMPLE?'اختار شخصية وسولف وياها بأي موضوع. المحادثة ما تخلص إلا انت تنهيها، وتصحّحلك أخطاءك.':aiChecked?'المحادثة الحرّة مو متوفرة هسه.':'دا أتحضّر للمحادثة...'}</p>
   <div class="chatters">${CHATTERS.map(c=>`<button class="chatter" data-act="chatWith" data-who="${c}" ${aiCardState()}>${avc(c,64)}<b>${CH[c].name}</b><span>${CH[c].role}</span></button>`).join('')}</div>`;
   if(!learned.length)return h+`<div class="empty" style="margin-top:20px">${bitSVG('think')}<h3>ماكو كلمات بعد</h3><p>خلّص أول درس حتى تتجمّع كلماتك هنا وتنفتح التمارين.</p><div class="btn-row"><button class="btn" data-act="tab" data-tab="learn">روح للدروس</button></div></div>`;
   const mc=S.mistakes.length;
@@ -1572,7 +1572,7 @@ function startTalk(tk){
 }
 function showTyping(){const c=$('#chat');if(!c)return;c.insertAdjacentHTML('beforeend',`<div class="msg" id="typing">${avc(L.tk.who,40)}<div class="bub"><span class="typing"><span></span><span></span><span></span></span></div></div>`);scrollChat()}
 function hideTyping(){const t=$('#typing');t&&t.remove()}
-const AIERR={not_granted:'ما سمحت للموقع يستخدم Claude، فالمحادثة متوقفة. تگدر تسمحله من قائمة الأذونات بالصفحة.',rate_limited:'رسائل هواية ورا بعض. استنى دقيقة وجرّب مرة ثانية.',sampling_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',capability_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',session_expired:'انتهت الجلسة. حدّث الصفحة وجرّب.',invalid_json:'الرد وصل بشكل غلط. جرّب مرة ثانية.'};
+const AIERR={not_granted:'ما سمحت للموقع يستخدم المساعد الذكي، فالمحادثة متوقفة. تگدر تسمحله من قائمة الأذونات بالصفحة.',rate_limited:'رسائل هواية ورا بعض. استنى دقيقة وجرّب مرة ثانية.',sampling_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',capability_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',session_expired:'انتهت الجلسة. حدّث الصفحة وجرّب.',invalid_json:'الرد وصل بشكل غلط. جرّب مرة ثانية.'};
 async function talkOpen(){
   const cur=L;if(!cur||cur.busy||!SAMPLE)return;cur.busy=true;
   $$('#chat .sysmsg').forEach(x=>x.remove());showTyping();renderTalkFoot();
@@ -1600,7 +1600,7 @@ function renderTalk(keep){
     if(L.opening)addMsg(tk.who,L.opening.reply,L.opening.reply_ar,true);
     renderGoals();
   }
-  $('#aioff').innerHTML=SAMPLE?'':`<div class="ai-off">${aiChecked?`<b>المحادثة الذكية مو متوفرة هنا.</b><br>تشتغل لما تفتح الموقع داخل Claude، وتسمحله يستخدم Claude لما يطلب منك.`:'دا أتحضّر للمحادثة...'}</div>`;
+  $('#aioff').innerHTML=SAMPLE?'':`<div class="ai-off">${aiChecked?`<b>المحادثة الذكية مو متوفرة هنا.</b><br>تشتغل لما تسمح للموقع يستخدم المساعد الذكي لما يطلب منك.`:'دا أتحضّر للمحادثة...'}</div>`;
   renderTalkFoot();talkBar();setHearts();
 }
 function talkBar(){setBar(L.tk.goals.length?L.goals.size/L.tk.goals.length*100:Math.min(100,L.userTurns*10))}
@@ -1768,7 +1768,7 @@ const ACT={
     if(st==='locked'){sheet(lockedSheet(t.title,'تنفتح بعد قصة هالأسبوع.'));return}
     sheet(`<div class="center"><p class="eyebrow">الأسبوع ${t.w.n} · محادثة</p><div class="sheet-cast">${avc(t.who)}</div><h2>${esc(t.title)}</h2><p>${C.name}، ${C.role}، راح تسولف وياك بالإنجليزي وتصحّحلك. هاي أفكار تبدي بيها، وبعدها احچي براحتك بأي موضوع. المحادثة ما تخلص إلا انت تنهيها.</p></div>
       <div class="goals" style="justify-content:center;margin-top:10px">${t.goals.map(g=>`<span class="gl"><i></i>${esc(g[1])}</span>`).join('')}</div>
-      ${SAMPLE?'':`<p class="center" style="font-size:.9rem">${aiChecked?'المحادثة الذكية تشتغل لما تفتح الموقع داخل Claude.':'دا أتحضّر للمحادثة...'}</p>`}
+      ${SAMPLE?'':`<p class="center" style="font-size:.9rem">${aiChecked?'المحادثة الذكية مو متوفرة هسه.':'دا أتحضّر للمحادثة...'}</p>`}
       <div class="btn-row"><button class="btn wide" style="--c:var(--uc)" data-act="startTalk" data-id="${t.id}" ${SAMPLE?'':'disabled'}>${st==='done'?'سولف مرة ثانية':'ابدأ المحادثة · +20 XP'}</button></div>`,`--uc:${LVLS[t.w.li].c}`)},
   talkFree:()=>{if(!SAMPLE)return;startTalk(FREE)},
   chatWith:el=>{if(!SAMPLE)return;const who=el.dataset.who,C=CH[who];
