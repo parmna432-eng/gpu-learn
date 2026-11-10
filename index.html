@@ -887,13 +887,81 @@ function award(xp){
   return {up,goal};
 }
 
-/* ---------- runtime abilities (Claude voice, dictation, AI) ---------- */
-let TTS=null,DICT=null,SAMPLE=null,ttsOff=false,aiChecked=false,dictLangOk=true;
+/* ---------- Gemini (free key from aistudio.google.com, kept in the learner's browser) ---------- */
+const GMKEY='gpulearn.gmkey',GMMOD='gpulearn.gmmodels',GMAPI='https://generativelanguage.googleapis.com/v1beta/';
+let gmKey=(()=>{try{return localStorage.getItem(GMKEY)||''}catch(e){return ''}})();
+let gmBad=false,gmTtsCool=0,gmMods=(()=>{try{return JSON.parse(localStorage.getItem(GMMOD)||'null')}catch(e){return null}})();
+const GMV={bit:'Puck',layla:'Kore',emma:'Leda',noor:'Aoede',karrar:'Charon',sam:'Fenrir',mike:'Orus'};
+async function gmReq(path,body,signal){
+  let r;
+  try{r=await fetch(GMAPI+path,{method:body?'POST':'GET',headers:Object.assign({'x-goog-api-key':gmKey},body?{'Content-Type':'application/json'}:{}),body:body?JSON.stringify(body):undefined,signal})}
+  catch(e){throw {code:e&&e.name==='AbortError'?'cancelled':'network'}}
+  let j=null;try{j=await r.json()}catch(e){}
+  if(!r.ok){const m=(j&&j.error&&j.error.message)||'';
+    const code=r.status===429?'rate_limited':(r.status===400&&/api key/i.test(m))||r.status===401||r.status===403?'gm_key':r.status===404?'gm_model':'gm_other';
+    if(code==='gm_key')gmBad=true;throw {code,msg:m}}
+  return j;
+}
+const gmVer=n=>{const m=n.match(/gemini-(\d+(?:\.\d+)?)/);return m?parseFloat(m[1]):0};
+async function gmPick(force){
+  if(gmMods&&!force)return gmMods;
+  const j=await gmReq('models?pageSize=1000');
+  const ms=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>m.name.replace(/^models\//,''));
+  const best=a=>a.sort((x,y)=>gmVer(y)-gmVer(x)||x.length-y.length)[0];
+  const chat=ms.includes('gemini-flash-latest')?'gemini-flash-latest':best(ms.filter(n=>/^gemini-[\d.]+-flash$/.test(n)))||best(ms.filter(n=>/^gemini-[\d.]+-flash-lite$/.test(n)))||best(ms.filter(n=>/^gemini-[\d.]+-flash/.test(n)&&!/tts|image|audio|live|embed/.test(n)));
+  const tts=best(ms.filter(n=>/flash.*tts/.test(n)))||best(ms.filter(n=>/tts/.test(n)));
+  if(!chat)throw {code:'gm_model'};
+  gmMods={chat,tts:tts||''};try{localStorage.setItem(GMMOD,JSON.stringify(gmMods))}catch(e){}
+  return gmMods;
+}
+function gmText(j){const c=j&&j.candidates&&j.candidates[0];return c&&c.content&&c.content.parts?c.content.parts.filter(x=>!x.thought&&x.text).map(x=>x.text).join(''):''}
+const gmSample={async json(msgs,o){
+  o=o||{};const m=await gmPick();
+  const body={contents:msgs.map(x=>({role:x.role==='assistant'?'model':'user',parts:[{text:x.content}]})),generationConfig:{responseMimeType:'application/json',temperature:.8}};
+  let j;
+  try{j=await gmReq('models/'+m.chat+':generateContent',body,o.signal)}
+  catch(e){if(e.code==='gm_model'){gmMods=null;const m2=await gmPick(true);j=await gmReq('models/'+m2.chat+':generateContent',body,o.signal)}else throw e}
+  const t=gmText(j).trim().replace(/^```(?:json)?\s*/i,'').replace(/```$/,'');
+  try{return JSON.parse(t)}catch(e){throw {code:'invalid_json'}}
+}};
+function pcmWav(b64,rate){
+  const raw=atob(b64),n=raw.length,buf=new ArrayBuffer(44+n),v=new DataView(buf),w=(o,str)=>{for(let i=0;i<str.length;i++)v.setUint8(o+i,str.charCodeAt(i))};
+  w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,n,true);
+  const u=new Uint8Array(buf,44);for(let i=0;i<n;i++)u[i]=raw.charCodeAt(i);
+  return new Blob([buf],{type:'audio/wav'});
+}
+async function gmClip(text,who,slow){
+  const voice=GMV[who]||GMV.bit,k='gm|'+voice+'|'+(slow?'s':'n')+'|'+text;
+  if(mmMem.has(k))return mmMem.get(k);
+  let blob=await idbGet(k);
+  if(!blob){
+    const m=await gmPick();if(!m.tts)throw {code:'gm_notts'};
+    const j=await gmReq('models/'+m.tts+':generateContent',{contents:[{parts:[{text:(slow?'Say slowly and clearly, like a teacher: ':'Say naturally: ')+text}]}],
+      generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:voice}}}}});
+    const part=j&&j.candidates&&j.candidates[0]&&j.candidates[0].content&&(j.candidates[0].content.parts||[]).find(x=>x.inlineData);
+    if(!part)throw {code:'gm_other'};
+    const rate=+((part.inlineData.mimeType||'').match(/rate=(\d+)/)||[0,24000])[1];
+    blob=pcmWav(part.inlineData.data,rate);idbPut(k,blob);
+  }
+  mmMem.set(k,blob);return blob;
+}
+async function gmPlay(text,o){
+  const b=await gmClip(text,o.who,o.slow);
+  if(mmAudio){mmAudio.pause();try{URL.revokeObjectURL(mmAudio.src)}catch(e){}}
+  mmAudio=new Audio(URL.createObjectURL(b));
+  await mmAudio.play();
+}
+const gmVoiceOn=()=>!!gmKey&&!gmBad&&Date.now()>gmTtsCool;
+const GMERR={gm_key:'مفتاح Gemini مرفوض. تأكد منه بصفحة حسابي.',rate_limited:'خلص حد الأصوات المجاني من Gemini هسه، فاستعملت صوت المتصفح. يرجع بعد شوية.',network:'ما گدرت أتصل بـ Gemini، فاستعملت صوت المتصفح.',gm_notts:'حسابك بـ Gemini ما بي موديل أصوات، فاستعملت صوت المتصفح.'};
+/* ---------- runtime abilities (voice, dictation, AI) ---------- */
+let TTS=null,DICT=null,SAMPLE=gmKey?gmSample:null,ttsOff=false,aiChecked=false,dictLangOk=true;
 (async()=>{
+  await 0;
   try{
     if(window.claude&&typeof window.claude.use==='function'){
       const r=await Promise.all([claude.use('sample'),claude.use('tts'),claude.use('dictation')].map(p=>p.catch(()=>null)));
-      SAMPLE=r[0];TTS=r[1];DICT=r[2];
+      SAMPLE=r[0]||(gmKey?gmSample:null);TTS=r[1];DICT=r[2];
       if(DICT){
         DICT.onPartial(({text})=>{if(L&&L.kind==='talk'){const t=$('#tin');if(t)t.value=(L.micBase||'')+text}});
         DICT.onFinal(({text})=>{if(L&&L.kind==='talk'){L.micBase=(L.micBase||'')+text+' ';const t=$('#tin');if(t){t.value=L.micBase;syncSend()}}});
@@ -947,7 +1015,7 @@ let toastT=null;
 function toast(msg){let t=$('#toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('role','status');document.body.appendChild(t)}t.textContent=msg;t.className='show';clearTimeout(toastT);toastT=setTimeout(()=>{t.className=''},4200)}
 
 const canWebSpeak=('speechSynthesis' in window)&&typeof SpeechSynthesisUtterance!=='undefined';
-const canSpeak=()=>!!mmKey&&!mmBad||!!TTS&&!ttsOff||canWebSpeak;
+const canSpeak=()=>!!mmKey&&!mmBad||!!gmKey&&!gmBad||!!TTS&&!ttsOff||canWebSpeak;
 function animTalk(who,text){
   const ms=Math.min(5200,Math.max(700,text.length*62));
   $$(`[data-who="${who}"]`).forEach(el=>{el.classList.add('talking');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('talking'),ms)});
@@ -965,10 +1033,18 @@ function speak(text,o){
     mmPlay(text,o).catch(e=>{const c=e&&e.code;
       if(c===1004){mmBad=true}
       if(MMERR[c]&&!speak._warned){speak._warned=true;toast(MMERR[c]);setTimeout(()=>{speak._warned=false},20000)}
-      speakOther(text,o)});
+      speakGm(text,o)});
     return;
   }
-  speakOther(text,o);
+  speakGm(text,o);
+}
+function speakGm(text,o){
+  if(!gmVoiceOn()){speakOther(text,o);return}
+  gmPlay(text,o).catch(e=>{const c=e&&e.code;
+    if(c==='rate_limited')gmTtsCool=Date.now()+5*60e3;
+    if(c==='gm_notts')gmTtsCool=Date.now()+864e5;
+    if(GMERR[c]&&!speakGm._warned){speakGm._warned=true;toast(GMERR[c]);setTimeout(()=>{speakGm._warned=false},60000)}
+    speakOther(text,o)});
 }
 function speakOther(text,o){
   if(TTS&&!ttsOff){
@@ -1215,7 +1291,7 @@ function viewPractice(){
   const learned=learnedWords(),due=dueWords().length;
   let h=`<h1 class="h">التمرين</h1><p class="sub">التمرين ما ياكل قلوب، ويرجّعلك قلب كل مرة تخلّصه.</p>
   <h2 class="h2" style="margin-top:8px">سولف بحرّية</h2>
-  <p class="sub" style="margin-top:-6px">${SAMPLE?'اختار شخصية وسولف وياها بأي موضوع. المحادثة ما تخلص إلا انت تنهيها، وتصحّحلك أخطاءك.':aiChecked?'المحادثة الحرّة مو متوفرة هسه.':'دا أتحضّر للمحادثة...'}</p>
+  <p class="sub" style="margin-top:-6px">${SAMPLE?'اختار شخصية وسولف وياها بأي موضوع. المحادثة ما تخلص إلا انت تنهيها، وتصحّحلك أخطاءك.':aiChecked?'المحادثة الحرّة تشتغل لما تحط مفتاح Gemini المجاني بصفحة حسابي.':'دا أتحضّر للمحادثة...'}</p>
   <div class="chatters">${CHATTERS.map(c=>`<button class="chatter" data-act="chatWith" data-who="${c}" ${aiCardState()}>${avc(c,64)}<b>${CH[c].name}</b><span>${CH[c].role}</span></button>`).join('')}</div>`;
   if(!learned.length)return h+`<div class="empty" style="margin-top:20px">${bitSVG('think')}<h3>ماكو كلمات بعد</h3><p>خلّص أول درس حتى تتجمّع كلماتك هنا وتنفتح التمارين.</p><div class="btn-row"><button class="btn" data-act="tab" data-tab="learn">روح للدروس</button></div></div>`;
   const mc=S.mistakes.length;
@@ -1322,6 +1398,14 @@ function viewProfile(){
   <p class="note">بهالوتيرة تخلّص المنهج كامل (A1 لـ B2) بحدود ${paceMonths(S.goal)} شهر.</p>
   <h2 class="h2">الإنجازات</h2>
   <div class="card">${achievements().map(a=>{const ok=a.c>=a.n,p=Math.min(100,Math.round(a.c/a.n*100));return `<div class="ach ${ok?'':'no'}" style="--c:${a.col}"><span class="bdg">${a.ic}</span><div><h4>${a.t}</h4><p>${a.d}</p><div class="pbar"><i style="width:${p}%"></i></div></div><small>${Math.min(a.c,a.n)}/${a.n}</small></div>`}).join('')}</div>
+  <h2 class="h2">Gemini · محادثة وأصوات مجانية</h2>
+  <div class="card mm">
+    <p style="margin:0 0 8px"><b>${gmKey?(gmBad?'المفتاح مرفوض ✗':'مفعّل ✓'):'مو مفعّل'}</b> · حط مفتاح Gemini API المجاني مالك، وتشتغل المحادثة الحرّة ويا الشخصيات، وتنطق الكلمات والحوارات بأصوات Gemini، وكل شخصية بصوتها.</p>
+    <p class="note" style="margin:0 0 10px">المفتاح مجاني: تاخذه من aistudio.google.com/apikey بحساب Google، وتدوس Create API key. ينحفظ بمتصفحك بس ويروح مباشرة لـ Google. الحد المجاني للأصوات قليل باليوم، فكل صوت ينحفظ بالمتصفح بعد أول مرة، ولمن يخلص الحد يرجع لصوت المتصفح لحاله. إذا عندك مفتاح MiniMax، أصوات MiniMax تتقدّم على أصوات Gemini.</p>
+    <input id="gmIn" class="mm-in" type="password" dir="ltr" autocomplete="off" spellcheck="false" placeholder="${gmKey?'•••••••• (انحفظ مفتاح)':'الصق مفتاح Gemini هنا'}" aria-label="مفتاح Gemini API">
+    <div class="mm-row"><button class="btn go" data-act="gmSave">احفظ المفتاح</button>${gmKey?`<button class="btn go" style="--c:var(--u3)" data-act="gmTest">جرّب</button><button class="linkbtn danger" data-act="gmClear">امسح المفتاح</button>`:''}</div>
+    <p class="note" id="gmStatus" style="margin:8px 0 0"></p>
+  </div>
   <h2 class="h2">أصوات MiniMax</h2>
   <div class="card mm">
     <p style="margin:0 0 8px"><b>${mmKey?(mmBad?'المفتاح مرفوض ✗':'مفعّلة ✓'):'مو مفعّلة'}</b> · حط مفتاح MiniMax API مالك، وتصير الكلمات والحوارات تنطق بأصوات طبيعية، وكل شخصية بصوتها.</p>
@@ -1572,7 +1656,7 @@ function startTalk(tk){
 }
 function showTyping(){const c=$('#chat');if(!c)return;c.insertAdjacentHTML('beforeend',`<div class="msg" id="typing">${avc(L.tk.who,40)}<div class="bub"><span class="typing"><span></span><span></span><span></span></span></div></div>`);scrollChat()}
 function hideTyping(){const t=$('#typing');t&&t.remove()}
-const AIERR={not_granted:'ما سمحت للموقع يستخدم المساعد الذكي، فالمحادثة متوقفة. تگدر تسمحله من قائمة الأذونات بالصفحة.',rate_limited:'رسائل هواية ورا بعض. استنى دقيقة وجرّب مرة ثانية.',sampling_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',capability_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',session_expired:'انتهت الجلسة. حدّث الصفحة وجرّب.',invalid_json:'الرد وصل بشكل غلط. جرّب مرة ثانية.'};
+const AIERR={not_granted:'ما سمحت للموقع يستخدم المساعد الذكي، فالمحادثة متوقفة. تگدر تسمحله من قائمة الأذونات بالصفحة.',rate_limited:'رسائل هواية ورا بعض، أو خلص الحد المجاني لليوم. استنى شوية وجرّب مرة ثانية.',sampling_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',capability_disabled:'المحادثة الذكية مطفّية بهذا الحساب.',session_expired:'انتهت الجلسة. حدّث الصفحة وجرّب.',invalid_json:'الرد وصل بشكل غلط. جرّب مرة ثانية.',gm_key:'مفتاح Gemini مرفوض. تأكد منه بصفحة حسابي.',gm_model:'ما لگيت موديل محادثة بحساب Gemini مالك.',network:'ما گدرت أتصل بالإنترنت. تأكد من الاتصال وجرّب.',gm_other:'Gemini رجّع خطأ. جرّب مرة ثانية.'};
 async function talkOpen(){
   const cur=L;if(!cur||cur.busy||!SAMPLE)return;cur.busy=true;
   $$('#chat .sysmsg').forEach(x=>x.remove());showTyping();renderTalkFoot();
@@ -1600,7 +1684,7 @@ function renderTalk(keep){
     if(L.opening)addMsg(tk.who,L.opening.reply,L.opening.reply_ar,true);
     renderGoals();
   }
-  $('#aioff').innerHTML=SAMPLE?'':`<div class="ai-off">${aiChecked?`<b>المحادثة الذكية مو متوفرة هنا.</b><br>تشتغل لما تسمح للموقع يستخدم المساعد الذكي لما يطلب منك.`:'دا أتحضّر للمحادثة...'}</div>`;
+  $('#aioff').innerHTML=SAMPLE?'':`<div class="ai-off">${aiChecked?`<b>المحادثة الذكية مو مفعّلة.</b><br>حط مفتاح Gemini المجاني بصفحة حسابي، وتشتغل المحادثة ويا كل الشخصيات.`:'دا أتحضّر للمحادثة...'}</div>`;
   renderTalkFoot();talkBar();setHearts();
 }
 function talkBar(){setBar(L.tk.goals.length?L.goals.size/L.tk.goals.length*100:Math.min(100,L.userTurns*10))}
@@ -1768,7 +1852,7 @@ const ACT={
     if(st==='locked'){sheet(lockedSheet(t.title,'تنفتح بعد قصة هالأسبوع.'));return}
     sheet(`<div class="center"><p class="eyebrow">الأسبوع ${t.w.n} · محادثة</p><div class="sheet-cast">${avc(t.who)}</div><h2>${esc(t.title)}</h2><p>${C.name}، ${C.role}، راح تسولف وياك بالإنجليزي وتصحّحلك. هاي أفكار تبدي بيها، وبعدها احچي براحتك بأي موضوع. المحادثة ما تخلص إلا انت تنهيها.</p></div>
       <div class="goals" style="justify-content:center;margin-top:10px">${t.goals.map(g=>`<span class="gl"><i></i>${esc(g[1])}</span>`).join('')}</div>
-      ${SAMPLE?'':`<p class="center" style="font-size:.9rem">${aiChecked?'المحادثة الذكية مو متوفرة هسه.':'دا أتحضّر للمحادثة...'}</p>`}
+      ${SAMPLE?'':`<p class="center" style="font-size:.9rem">${aiChecked?'المحادثة الذكية تشتغل لما تحط مفتاح Gemini المجاني بصفحة حسابي.':'دا أتحضّر للمحادثة...'}</p>`}
       <div class="btn-row"><button class="btn wide" style="--c:var(--uc)" data-act="startTalk" data-id="${t.id}" ${SAMPLE?'':'disabled'}>${st==='done'?'سولف مرة ثانية':'ابدأ المحادثة · +20 XP'}</button></div>`,`--uc:${LVLS[t.w.li].c}`)},
   talkFree:()=>{if(!SAMPLE)return;startTalk(FREE)},
   chatWith:el=>{if(!SAMPLE)return;const who=el.dataset.who,C=CH[who];
@@ -1791,6 +1875,18 @@ const ACT={
   mmTest:()=>{const st=$('#mmStatus');if(st)st.textContent='دا أجرّب...';mmBad=false;
     mmPlay('Hello! I am Bit. Welcome to GPU Learn.',{who:'bit'}).then(()=>{if(st)st.textContent='شغّال ✓ هسه كل الأصوات من MiniMax.'})
       .catch(e=>{const c=e&&e.code;if(c===1004)mmBad=true;if(st)st.textContent=(MMERR[c]||'ما اشتغل')+(e&&e.msg?' ('+e.msg+')':'')})},
+  gmSave:()=>{const i=$('#gmIn'),v=i?i.value.trim():'';if(!v){const st=$('#gmStatus');if(st)st.textContent='الصق المفتاح أول.';return}
+    gmKey=v;gmBad=false;gmTtsCool=0;gmMods=null;try{localStorage.setItem(GMKEY,v);localStorage.removeItem(GMMOD)}catch(e){}
+    if(!SAMPLE)SAMPLE=gmSample;render();toast('انحفظ المفتاح. دوس «جرّب».')},
+  gmClear:()=>{gmKey='';gmBad=false;gmMods=null;try{localStorage.removeItem(GMKEY);localStorage.removeItem(GMMOD)}catch(e){}
+    if(SAMPLE===gmSample)SAMPLE=null;render();toast('انمسح مفتاح Gemini.')},
+  gmTest:async()=>{const st=$('#gmStatus'),say=t=>{if(st)st.textContent=t};say('دا أجرّب...');gmBad=false;gmTtsCool=0;
+    try{const m=await gmPick(true);const r=await gmSample.json([{role:'user',content:'Reply ONLY with JSON: {"reply":"one short friendly hello from Bit, an English tutor robot"}'}]);
+      if(!r||!r.reply)throw {code:'invalid_json'};
+      say('المحادثة شغّالة ✓ ('+m.chat+'). دا أجرّب الصوت...');
+      try{await gmPlay(r.reply,{who:'bit'});say('كلشي شغّال ✓ المحادثة ('+m.chat+') والصوت ('+m.tts+').')}
+      catch(e){const c=e&&e.code;say('المحادثة شغّالة ✓ بس الصوت: '+(GMERR[c]||'ما اشتغل')+(e&&e.msg?' ('+e.msg+')':''))}
+    }catch(e){const c=e&&e.code;say((AIERR[c]||GMERR[c]||'ما اشتغل')+(e&&e.msg?' ('+e.msg+')':''));render();const s2=$('#gmStatus');if(s2)s2.textContent=(AIERR[c]||GMERR[c]||'ما اشتغل')+(e&&e.msg?' ('+e.msg+')':'')}},
   sess:el=>sessLaunch(+el.dataset.i),
   cert:el=>{const lv=LVLS[+el.dataset.l];sheet(certHTML(lv)+`<div class="btn-row"><button class="btn" data-act="closeSheet">سدّ</button></div>`)},
   start:el=>{const l=LESSONS.find(x=>x.id===el.dataset.id);regen();if(S.hearts<=0){sheet(noHeartsHTML(false));return}startLesson(l)},
