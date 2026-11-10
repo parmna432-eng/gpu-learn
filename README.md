@@ -19,7 +19,8 @@ A complete 12‑month English course for Arabic speakers, from CEFR A1 to B2.
 
 - الموقع ملف واحد (`index.html`) وما يحتاج سيرفر.
 - التقدّم ينحفظ بمتصفح المستخدم (localStorage) بس.
-- **المحادثة الذكية وأصوات Claude** تشتغل بس لما ينفتح الموقع داخل Claude. على GitHub Pages المحادثة تطلع متوقفة، والنطق يستعمل صوت المتصفح.
+- **أصوات MiniMax:** من صفحة «حسابي» كل طالب يگدر يحط مفتاح MiniMax API مالته، وتصير الكلمات والحوارات تنطق بأصوات طبيعية (موديل speech-2.8-turbo، والكلفة على حسابه). المفتاح ينحفظ بمتصفحه بس، وكل صوت ينحفظ بعد أول مرة. وبدون مفتاح، النطق يصير بصوت المتصفح.
+- **المحادثة الذكية** تشتغل بس لما ينفتح الموقع داخل Claude.
 - المحتوى مكتوب خصيصاً لهذا الموقع، ومبني على إطار CEFR ومبادئ تعليمية معروفة. الشهادات داخل التطبيق تشجيعية ومو رسمية.
 
-The site is a single static `index.html`. Progress is stored in the browser. The AI conversation partner and Claude voices only work when the page is opened inside Claude; on GitHub Pages the chat is disabled and pronunciation uses the browser's built‑in speech.
+The site is a single static `index.html`. Progress is stored in the browser. Learners can paste their own MiniMax API key on the Profile page to get natural MiniMax voices (speech-2.8-turbo, billed to their account; the key stays in their browser and generated clips are cached). Without a key, pronunciation uses the browser's built‑in speech. The AI conversation partner only works when the page is opened inside Claude.

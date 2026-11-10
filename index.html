@@ -531,6 +531,11 @@ h1,h2,h3{text-wrap:balance}
 .talk-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;max-width:760px;margin-inline:auto}
 .talk-tools .note{margin:0}
 .btn.end{min-width:0;padding:.5rem 1rem;font-size:.92rem}
+.mm-in{width:100%;font:500 1rem var(--f-body);padding:12px 14px;border:2px solid var(--line);border-radius:14px;background:var(--bg);color:var(--ink)}
+.mm-in:focus{outline:none;border-color:var(--brand)}
+.mm-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+#toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);opacity:0;pointer-events:none;z-index:80;max-width:min(92vw,480px);background:var(--ink);color:var(--bg);font:600 .92rem var(--f-body);padding:10px 16px;border-radius:14px;transition:opacity .2s,transform .2s;text-align:center}
+#toast.show{opacity:1;transform:translate(-50%,0)}
 @media (max-width:420px){.ex-title{font-size:1.3rem}.pic{width:76px;height:76px;font-size:2.5rem}.prompt .bit{width:76px}.btn{min-width:0;flex:1}.tiles{gap:8px}.actor{width:104px}.hero h1{font-size:1.9rem}.unit-cast{display:none}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
@@ -900,8 +905,49 @@ let TTS=null,DICT=null,SAMPLE=null,ttsOff=false,aiChecked=false,dictLangOk=true;
   if(!L&&$('#onb').hidden)render();
   if(L&&L.kind==='talk'){renderTalk(true);if(!L.opening&&SAMPLE)talkOpen()}
 })();
+/* ---------- MiniMax voices (each learner's own API key, kept in their browser) ---------- */
+const MMKEY='gpulearn.mmkey',MMMODEL='speech-2.8-turbo';
+let mmKey=(()=>{try{return localStorage.getItem(MMKEY)||''}catch(e){return ''}})();
+let mmBad=false,mmAudio=null;const mmMem=new Map();
+const MMV={bit:'English_Lucky_Robot',layla:'English_Graceful_Lady',emma:'English_radiant_girl',noor:'English_Graceful_Lady',karrar:'English_Persuasive_Man',sam:'English_expressive_narrator',mike:'English_Insightful_Speaker'};
+let idbP=null;
+function idbOpen(){if(idbP)return idbP;idbP=new Promise(res=>{try{const r=indexedDB.open('gpulearn-audio',1);r.onupgradeneeded=()=>r.result.createObjectStore('clips');r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)}catch(e){res(null)}});return idbP}
+async function idbGet(k){const db=await idbOpen();if(!db)return null;return new Promise(res=>{try{const q=db.transaction('clips').objectStore('clips').get(k);q.onsuccess=()=>res(q.result||null);q.onerror=()=>res(null)}catch(e){res(null)}})}
+async function idbPut(k,v){const db=await idbOpen();if(!db)return;try{db.transaction('clips','readwrite').objectStore('clips').put(v,k)}catch(e){}}
+async function mmFetch(text,voice,slow){
+  let r;
+  try{r=await fetch('https://api.minimax.io/v1/t2a_v2',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+mmKey},
+    body:JSON.stringify({model:MMMODEL,text,stream:false,language_boost:'English',output_format:'hex',voice_setting:{voice_id:voice,speed:slow?0.75:1,vol:1,pitch:0},audio_setting:{sample_rate:24000,bitrate:64000,format:'mp3',channel:1}})})}
+  catch(e){throw {code:'network'}}
+  let j=null;try{j=await r.json()}catch(e){}
+  const c=j&&j.base_resp?j.base_resp.status_code:-1;
+  if(c!==0||!j.data||!j.data.audio)throw {code:c,msg:j&&j.base_resp&&j.base_resp.status_msg};
+  const h=j.data.audio,b=new Uint8Array(h.length>>1);for(let i=0;i<b.length;i++)b[i]=parseInt(h.substr(i*2,2),16);
+  return new Blob([b],{type:'audio/mpeg'});
+}
+async function mmClip(text,who,slow){
+  const voice=MMV[who]||MMV.bit,k=voice+'|'+(slow?'s':'n')+'|'+text;
+  if(mmMem.has(k))return mmMem.get(k);
+  let blob=await idbGet(k);
+  if(!blob){
+    try{blob=await mmFetch(text,voice,slow)}
+    catch(e){if(e.code===2013&&voice!=='English_expressive_narrator')blob=await mmFetch(text,'English_expressive_narrator',slow);else throw e}
+    idbPut(k,blob);
+  }
+  mmMem.set(k,blob);return blob;
+}
+async function mmPlay(text,o){
+  const b=await mmClip(text,o.who,o.slow);
+  if(mmAudio){mmAudio.pause();try{URL.revokeObjectURL(mmAudio.src)}catch(e){}}
+  mmAudio=new Audio(URL.createObjectURL(b));
+  await mmAudio.play();
+}
+const MMERR={1004:'مفتاح MiniMax مرفوض. تأكد منه بصفحة حسابي.',1002:'MiniMax: طلبات هواية ورا بعض، جرّب بعد شوية.',1039:'MiniMax: طلبات هواية ورا بعض، جرّب بعد شوية.',1008:'رصيد حساب MiniMax خلصان.',network:'ما گدرت أتصل بـ MiniMax، فاستعملت صوت المتصفح.'};
+let toastT=null;
+function toast(msg){let t=$('#toast');if(!t){t=document.createElement('div');t.id='toast';t.setAttribute('role','status');document.body.appendChild(t)}t.textContent=msg;t.className='show';clearTimeout(toastT);toastT=setTimeout(()=>{t.className=''},4200)}
+
 const canWebSpeak=('speechSynthesis' in window)&&typeof SpeechSynthesisUtterance!=='undefined';
-const canSpeak=()=>!!TTS&&!ttsOff||canWebSpeak;
+const canSpeak=()=>!!mmKey&&!mmBad||!!TTS&&!ttsOff||canWebSpeak;
 function animTalk(who,text){
   const ms=Math.min(5200,Math.max(700,text.length*62));
   $$(`[data-who="${who}"]`).forEach(el=>{el.classList.add('talking');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('talking'),ms)});
@@ -915,6 +961,16 @@ function webSpeak(t,o){
 function speak(text,o){
   o=o||{};if(!text)return;
   if(o.who)animTalk(o.who,text);
+  if(mmKey&&!mmBad){
+    mmPlay(text,o).catch(e=>{const c=e&&e.code;
+      if(c===1004){mmBad=true}
+      if(MMERR[c]&&!speak._warned){speak._warned=true;toast(MMERR[c]);setTimeout(()=>{speak._warned=false},20000)}
+      speakOther(text,o)});
+    return;
+  }
+  speakOther(text,o);
+}
+function speakOther(text,o){
   if(TTS&&!ttsOff){
     TTS.speak(text,{voice:(CH[o.who]&&CH[o.who].voice)||'buttery',language:'en',rate:o.slow?.7:1}).catch(e=>{
       const c=e&&e.code;
@@ -924,7 +980,7 @@ function speak(text,o){
   }
   webSpeak(text,o);
 }
-function stopSpeech(){try{TTS&&TTS.stop()}catch(e){}try{canWebSpeak&&speechSynthesis.cancel()}catch(e){}}
+function stopSpeech(){try{mmAudio&&mmAudio.pause()}catch(e){}try{TTS&&TTS.stop()}catch(e){}try{canWebSpeak&&speechSynthesis.cancel()}catch(e){}}
 let ac=null;
 function tone(kind){
   if(!S.sound)return;
@@ -1266,6 +1322,14 @@ function viewProfile(){
   <p class="note">بهالوتيرة تخلّص المنهج كامل (A1 لـ B2) بحدود ${paceMonths(S.goal)} شهر.</p>
   <h2 class="h2">الإنجازات</h2>
   <div class="card">${achievements().map(a=>{const ok=a.c>=a.n,p=Math.min(100,Math.round(a.c/a.n*100));return `<div class="ach ${ok?'':'no'}" style="--c:${a.col}"><span class="bdg">${a.ic}</span><div><h4>${a.t}</h4><p>${a.d}</p><div class="pbar"><i style="width:${p}%"></i></div></div><small>${Math.min(a.c,a.n)}/${a.n}</small></div>`}).join('')}</div>
+  <h2 class="h2">أصوات MiniMax</h2>
+  <div class="card mm">
+    <p style="margin:0 0 8px"><b>${mmKey?(mmBad?'المفتاح مرفوض ✗':'مفعّلة ✓'):'مو مفعّلة'}</b> · حط مفتاح MiniMax API مالك، وتصير الكلمات والحوارات تنطق بأصوات طبيعية، وكل شخصية بصوتها.</p>
+    <p class="note" style="margin:0 0 10px">المفتاح ينحفظ بمتصفحك بس، ويروح مباشرة لـ MiniMax وما يوصل لأي مكان ثاني. الكلفة تنحسب على حسابك بموديل ${MMMODEL} (حوالي 0.6 دولار لكل 10 آلاف حرف). كل صوت ينحفظ بالمتصفح بعد أول مرة، فما تدفع على نفس الجملة مرتين. تاخذ المفتاح من platform.minimax.io، من قسم Account Management ثم API Keys. استعمل مفتاح بحد صرف قليل.</p>
+    <input id="mmIn" class="mm-in" type="password" dir="ltr" autocomplete="off" spellcheck="false" placeholder="${mmKey?'•••••••• (انحفظ مفتاح)':'الصق مفتاح MiniMax هنا'}" aria-label="مفتاح MiniMax API">
+    <div class="mm-row"><button class="btn go" data-act="mmSave">احفظ المفتاح</button>${mmKey?`<button class="btn go" style="--c:var(--u3)" data-act="mmTest">جرّب الصوت</button><button class="linkbtn danger" data-act="mmClear">امسح المفتاح</button>`:''}</div>
+    <p class="note" id="mmStatus" style="margin:8px 0 0"></p>
+  </div>
   <h2 class="h2">الإعدادات</h2>
   <div class="card">
     <div class="setrow"><span>أصوات الصح والغلط</span><button class="switch" role="switch" aria-checked="${S.sound}" aria-label="الأصوات" data-act="sound"></button></div>
@@ -1721,6 +1785,12 @@ const ACT={
     if(st==='locked'){sheet(lockedSheet(`صندوق الشهر ${mi+1}`,'اعبر اختبار الشهر حتى ينفتح وتاخذ 30 جوهرة.'));return}
     S.chests['c'+mi]=true;S.gems+=30;save();tone('win');confetti();render('gems');
     sheet(`<div class="center">${bitSVG('joy','jump')}<h2>+30 جوهرة!</h2><p>خلّصت الشهر ${mi+1}: «${MONTHS[mi]}». صار عندك ${S.gems} جوهرة.</p></div><div class="btn-row"><button class="btn" data-act="closeSheet">حلو</button></div>`)},
+  mmSave:()=>{const i=$('#mmIn'),v=i?i.value.trim():'';if(!v){const st=$('#mmStatus');if(st)st.textContent='الصق المفتاح أول.';return}
+    mmKey=v;mmBad=false;mmMem.clear();try{localStorage.setItem(MMKEY,v)}catch(e){}render();toast('انحفظ المفتاح. دوس «جرّب الصوت».')},
+  mmClear:()=>{mmKey='';mmBad=false;try{localStorage.removeItem(MMKEY)}catch(e){}render();toast('انمسح مفتاح MiniMax.')},
+  mmTest:()=>{const st=$('#mmStatus');if(st)st.textContent='دا أجرّب...';mmBad=false;
+    mmPlay('Hello! I am Bit. Welcome to GPU Learn.',{who:'bit'}).then(()=>{if(st)st.textContent='شغّال ✓ هسه كل الأصوات من MiniMax.'})
+      .catch(e=>{const c=e&&e.code;if(c===1004)mmBad=true;if(st)st.textContent=(MMERR[c]||'ما اشتغل')+(e&&e.msg?' ('+e.msg+')':'')})},
   sess:el=>sessLaunch(+el.dataset.i),
   cert:el=>{const lv=LVLS[+el.dataset.l];sheet(certHTML(lv)+`<div class="btn-row"><button class="btn" data-act="closeSheet">سدّ</button></div>`)},
   start:el=>{const l=LESSONS.find(x=>x.id===el.dataset.id);regen();if(S.hearts<=0){sheet(noHeartsHTML(false));return}startLesson(l)},
